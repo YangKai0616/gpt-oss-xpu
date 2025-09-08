@@ -59,9 +59,10 @@ def _attn_fwd(
     q = Q.load([off_z, off_h, start_m * BLOCK_M, 0]).reshape([BLOCK_M, HEAD_DIM])
 
     if BANDWIDTH:
-        lo, hi = tl.maximum(start_q, start_q + start_m * BLOCK_M - BANDWIDTH), start_q + (start_m + 1) * BLOCK_M
+        lo, hi = tl.maximum(0, start_q + start_m * BLOCK_M - BANDWIDTH + 1), start_q + (start_m + 1) * BLOCK_M
     else:
-        lo, hi = start_q, start_q + (start_m + 1) * BLOCK_M
+        lo, hi = 0, start_q + (start_m + 1) * BLOCK_M
+    hi = tl.minimum(N_KV_CTX, hi)
 
     for start_n in range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
@@ -216,12 +217,17 @@ def test_eq(batch_size, num_queries, num_keys, num_key_value_heads, num_key_valu
     if num_queries > num_keys:
         pytest.skip("too many queries")
 
-    q = torch.randn(batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim).bfloat16().cuda()
-    k = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().cuda()
-    v = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().cuda()
-    sinks = torch.randn(num_key_value_heads * num_key_value_groups).bfloat16().cuda()
+    if torch.xpu.is_available():
+        device = "xpu"
+    else:
+        device = "cuda"
 
-    start_q = torch.tensor([start_q], dtype=torch.int32).cuda()
+    q = torch.randn(batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim).bfloat16().to(device)
+    k = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().to(device)
+    v = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().to(device)
+    sinks = torch.randn(num_key_value_heads * num_key_value_groups).bfloat16().to(device)
+
+    start_q = torch.tensor([start_q], dtype=torch.int32).to(device)
 
     o1 = attention(q, k, v, sinks, sm_scale, sliding_window, start_q)
     o2 = attention_ref(q, k, v, sinks, sm_scale, sliding_window, start_q)
