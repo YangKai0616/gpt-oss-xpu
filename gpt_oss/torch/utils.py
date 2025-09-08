@@ -23,18 +23,34 @@ def init_distributed() -> torch.device:
     # Initialize distributed inference
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
+    xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+
+    if xpu_available:
+        backend = "xccl"
+        device_type = "xpu"
+    else:
+        backend = "nccl"
+        device_type = "cuda"
+
     if world_size > 1:
         dist.init_process_group(
-            backend="nccl", init_method="env://", world_size=world_size, rank=rank
+            backend=backend, init_method="env://", world_size=world_size, rank=rank
         )
-    torch.cuda.set_device(rank)
-    device = torch.device(f"cuda:{rank}")
 
-    # Warm up NCCL to avoid first-time latency
+    if xpu_available:
+        torch.xpu.set_device(rank)
+    else:
+        torch.cuda.set_device(rank)
+    device = torch.device(f"{device_type}:{rank}")
+
+    # Warm up backend to avoid first-time latency
     if world_size > 1:
         x = torch.ones(1, device=device)
         dist.all_reduce(x)
-        torch.cuda.synchronize(device)
+        if xpu_available:
+            torch.xpu.synchronize(device)
+        else:
+            torch.cuda.synchronize(device)
 
     suppress_output(rank)
     return device

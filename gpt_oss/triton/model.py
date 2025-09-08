@@ -437,7 +437,10 @@ class Transformer(torch.nn.Module):
         checkpoint = Checkpoint(path, device)
 
         for name, param in model.named_parameters():
-            torch.cuda.empty_cache()
+            if device.type == "xpu":
+                torch.xpu.empty_cache()
+            else:
+                torch.cuda.empty_cache()
             loaded_tensor = checkpoint.get(name)
 
             if "mlp1" in name:
@@ -463,7 +466,10 @@ class Transformer(torch.nn.Module):
                 param.data.copy_(loaded_tensor)
 
         # NOTE: Required to avoid OOM errors
-        torch.cuda.empty_cache()
+        if device.type == "xpu":
+            torch.xpu.empty_cache()
+        else:
+            torch.cuda.empty_cache()
         return model
 
 
@@ -476,10 +482,15 @@ class TokenGenerator:
         self.input_token = torch.zeros(1, dtype=torch.int32, device=self.device)
         # warmup
         self.model(self.input_token[None, :], caches=self.caches)
-        # capture for sampling
-        self.graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self.graph):
+
+        if self.device.type == "xpu":
+            self.graph = None
             self.logits = self.model(self.input_token[None, :], caches=self.caches)[0]
+        else:
+            # capture for sampling
+            self.graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(self.graph):
+                self.logits = self.model(self.input_token[None, :], caches=self.caches)[0]
 
     @torch.inference_mode()
     def generate(self,
@@ -497,7 +508,10 @@ class TokenGenerator:
         num_generated_tokens = 0
         while max_tokens == 0 or num_generated_tokens < max_tokens:
             self.input_token[0] = predicted_token
-            self.graph.replay()
+            if self.graph is not None:
+                self.graph.replay()
+            else:
+                self.logits = self.model(self.input_token[None, :], caches=self.caches)[0]
             if temperature == 0.0:
                 predicted_token = torch.argmax(self.logits[-1, :], dim=-1).item()
             else:
